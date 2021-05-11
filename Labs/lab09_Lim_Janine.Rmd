@@ -1,0 +1,421 @@
+---
+title: "Lab 9"
+author: "Janine Lim"
+output: pdf_document
+date: "11:59PM May 10, 2021"
+---
+
+Here we will learn about trees, bagged trees and random forests. You can use the `YARF` package if it works, otherwise, use the `randomForest` package (the standard).
+
+Let's take a look at the simulated sine curve data from practice lecture 12. Below is the code for the data generating process:
+
+```{r}
+rm(list = ls())
+n = 500
+sigma = 0.3
+x_min = 0
+x_max = 10
+f_x = function(x){sin(x)}
+y_x = function(x, sigma){f_x(x) + rnorm(n, 0, sigma)}
+x_train = runif(n, x_min, x_max)
+y_train = y_x(x_train, sigma)
+```
+
+Plot an example dataset of size 500:
+
+```{r}
+pacman::p_load(ggplot2)
+ggplot(data.frame(x=x_train, y = y_train)) + 
+  geom_point(aes(x=x, y=y))
+```
+
+Create a test set of size 500 as well
+
+```{r}
+x_test = runif(n, x_min, x_max)
+y_test = y_x(x_test, sigma)
+```
+
+Locate the optimal node size hyperparameter for the regression tree model. I believe you can use `randomForest` here by setting `ntree = 1`, `replace = FALSE`, `sampsize = n` (`mtry` is already set to be 1 because there is only one feature) and then you can set `nodesize`. Plot oos SE by node size.
+
+```{r}
+pacman::p_load(randomForest)
+
+node_sizes = 1:n
+se_by_node_sizes = array(NA, dim = length(node_sizes))
+for (i in 1:length(node_sizes)){
+  rf_mod = randomForest(x=data.frame(x=x_train), y =y_train, ntree = 1, replace = FALSE, sampsize = n, nodesize = node_sizes[i])
+  yhat_test = predict(rf_mod, data.frame(x=x_test))
+  se_by_node_sizes[i] = sd(y_test - yhat_test)
+}
+
+ggplot(data.frame(x=node_sizes, y = se_by_node_sizes)) + 
+  geom_line(aes(x=x, y=y)) + 
+  scale_x_reverse()
+
+which.min(se_by_node_sizes)
+
+```
+
+Plot the regression tree model with the optimal node size.
+
+```{r}
+rf_mod = randomForest(x=data.frame(x=x_train), y =y_train, ntree = 1, replace = FALSE, sampsize = n, nodesize = which.min(se_by_node_sizes))
+resolution = 0.01
+x_grid = seq(from = x_min, to = x_max, by = resolution)
+g_x = predict(rf_mod, data.frame(x=x_grid))
+ggplot(data.frame(x=x_grid, y = g_x))+ 
+  aes(x=x, y=y) +
+  geom_point(data = data.frame(x=x_train, y = y_train) ) + 
+     geom_point(col = "skyblue") 
+```
+
+Provide the bias-variance decomposition of this DGP fit with this model. It is a lot of code, but it is in the practice lectures. If your three numbers don't add up within two significant digits, increase your resolution.
+
+```{r}
+n=20
+xmin = 0
+xmax = 10
+n_train = 20
+n_test = 1000
+sigma = 0.3
+f = function(x){sin(x)}
+Nsim = 1000
+
+
+training_gs = matrix(NA, nrow = Nsim, ncol = 2)
+x_trains = matrix(NA, nrow = Nsim, ncol = n_train)
+y_trains = matrix(NA, nrow = Nsim, ncol = n_train)
+all_oos_residuals = matrix(NA, nrow = Nsim, ncol = n_test)
+for (nsim in 1 : Nsim){
+  #simulate dataset $\mathbb{D}$
+  x_train = runif(n_train, x_min, x_max)
+  delta_train = rnorm(n_train, 0, sigma) #Assumption I: mean zero and Assumption II: homoskedastic
+  y_train = f_x(x_train) + delta_train
+  x_trains[nsim, ] = x_train
+  y_trains[nsim, ] = y_train
+  
+  #fit a model g | x's, delta's and save it
+  g_model = lm(y_train ~ ., data.frame(x = x_train))
+  training_gs[nsim, ] = coef(g_model)
+  
+  #generate oos dataset according to the same data generating process (DGP) 
+  x_test = runif(n_test, x_min, x_max)
+  delta_test = rnorm(n_test, 0, sigma)
+  y_test = f_x(x_test) + delta_test
+  #predict oos using the model and save the oos residuals
+  y_hat_test = predict(g_model, data.frame(x = x_test))
+  all_oos_residuals[nsim, ] = y_test - y_hat_test
+}
+
+pacman::p_load(ggplot2)
+resolution = 10000
+x = seq(x_min, x_max, length.out = resolution)
+f_x_df = data.frame(x = x, f = f_x(x))
+ggplot(f_x_df, aes(x, f)) + 
+  geom_line(col = "green") + 
+  geom_point(aes(x, y), data = data.frame(x = x_trains[1, ], y = y_trains[1, ]))
+
+ggplot(f_x_df, aes(x, f)) + 
+  geom_line(col = "green") +
+  geom_point(aes(x, y), data = data.frame(x = x_trains[1, ], y = y_trains[1, ]), col = "blue") +
+  geom_point(aes(x, y), data = data.frame(x = x_trains[2, ], y = y_trains[2, ]), col = "darkgreen") +
+  geom_point(aes(x, y), data = data.frame(x = x_trains[3, ], y = y_trains[3, ]), col = "red")
+
+mse = mean(c(all_oos_residuals)^2)
+mse
+
+g_average = colMeans(training_gs)
+ggplot(f_x_df, aes(x, f)) + 
+  geom_line(col = "green") + 
+  geom_abline(intercept = g_average[1], slope = g_average[2], col = "red") +
+  ylim(-2, 2)
+
+x = seq(x_min, x_max, length.out = resolution)
+g_avg_x = g_average[1] + g_average[2] * x
+f = sin(x)
+biases = f - g_avg_x
+expe_bias_g_sq = mean(biases^2)
+expe_bias_g_sq
+
+plot_obj = ggplot() + 
+  xlim(x_min, x_max) + ylim(x_min^2, x_max^2)
+for (nsim in 1 : min(Nsim, 100)){ #otherwise takes too long
+  plot_obj = plot_obj + geom_abline(intercept = training_gs[nsim, 1], slope = training_gs[nsim, 2], col = "blue")
+}
+plot_obj +
+  geom_abline(intercept = g_average[1], slope = g_average[2], col = "red", lwd = 2) +
+  ylim(-2,2)
+  # geom_line(data = f_x_df, aes(x, f), col = "green", size = 1)
+
+x = seq(x_min, x_max, length.out = resolution)
+expe_g_x = g_average[1] + g_average[2] * x
+var_x_s = array(NA, Nsim)
+for (nsim in 1 : Nsim){
+  g_x = training_gs[nsim, 1] + training_gs[nsim, 2] * x
+  var_x_s[nsim] = mean((g_x - expe_g_x)^2)
+}
+expe_var_g = mean(var_x_s)
+expe_var_g
+
+
+mse
+sigma^2
+expe_bias_g_sq
+expe_var_g
+sigma^2 + expe_bias_g_sq + expe_var_g
+```
+
+```{r}
+rm(list = ls())
+```
+
+Take a sample of n = 2000 observations from the diamonds data.
+
+```{r}
+n=2000
+pacman::p_load(dplyr)
+
+diamonds_samp = diamonds %>% 
+                  sample_n(n)
+```
+
+find the bootstrap s_e for a RF model using 1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000 trees. If you are using the `randomForest` package, you can calculate oob residuals via `e_oob = y_train - rf_mod$predicted`. Plot. 
+
+```{r}
+num_trees = c(1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000)
+oob_se_by_num_trees = array(NA, length(num_trees))
+
+for (i in 1:length(num_trees)){
+  rf_mod = randomForest(price~., data = diamonds_samp, ntree = num_trees[i] )
+  oob_se_by_num_trees[i] = sd(diamonds_samp$price - rf_mod$predicted)
+}
+
+ggplot(data.frame(x=num_trees, y = oob_se_by_num_trees)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+Using the diamonds data, find the oob s_e for a bagged-tree model using 1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000 trees. If you are using the `randomForest` package, you can create the bagged tree model via setting an argument within the RF constructor function. 
+
+```{r}
+num_trees = c(1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000)
+oob_se_by_num_trees_bag = array(NA, length(num_trees))
+
+for (i in 1:length(num_trees)){
+  rf_mod = randomForest(price~., data = diamonds_samp, ntree = num_trees[i], mtry = ncol(diamonds_samp)-1)
+  oob_se_by_num_trees_bag[i] = sd(diamonds_samp$price - rf_mod$predicted)
+}
+
+ggplot(data.frame(x=num_trees, y = oob_se_by_num_trees_bag)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+
+What is the percentage gain / loss in performance of the RF model vs bagged trees model?
+
+```{r}
+(oob_se_by_num_trees - oob_se_by_num_trees_bag ) / oob_se_by_num_trees_bag *100
+```
+
+
+Plot bootstrap s_e by number of trees for both RF and bagged trees.
+
+```{r}
+ggplot(rbind(data.frame(num_trees = num_trees, value = oob_se_by_num_trees, model = "rf"), data.frame(num_trees = num_trees, value = oob_se_by_num_trees_bag, model = "BAG"))) + 
+  geom_line(aes(x = num_trees, y= value, col = model))
+
+```
+
+Build RF models for 500 trees using different `mtry` values: 1, 2, ... the maximum. That maximum will be the number of features assuming that we do not binarize categorical features if you are using `randomForest` or the number of features assuming binarization of the categorical features if you are using `YARF`. Calculate oob s_e for all mtry values.
+
+```{r}
+mtrys = 1:(ncol(diamonds_samp)-1)
+oob_se_by_mtrys = array(NA, length(mtrys))
+
+for (i in 1:length(mtrys)){
+  rf_mod = randomForest(price~., data = diamonds_samp, ntree = 500, mtry = mtrys[i])
+  oob_se_by_mtrys[i] = sd(diamonds_samp$price - rf_mod$predicted)
+}
+
+ggplot(data.frame(x=mtrys, y = oob_se_by_mtrys)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+
+```{r}
+rm(list = ls())
+```
+
+
+Take a sample of n = 2000 observations from the adult data.
+
+```{r}
+pacman::p_load_gh("coatless/ucidata")
+pacman::p_load(dplyr, ggplot2)
+data(adult)
+adult = na.omit(adult)
+
+adult_samp = adult%>% 
+                  sample_n(2000)
+```
+
+Using the adult data, find the oob misclassification error for an RF model using 1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000 trees.
+
+```{r}
+pacman::p_load(randomForest)
+num_trees = c(1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000)
+oob_ME_by_num_trees = array(NA, length(num_trees))
+
+for (i in 1:length(num_trees)){
+  rf_mod = randomForest(income~., data = adult_samp, ntree = num_trees[i] )
+  oob_ME_by_num_trees[i] = mean(adult_samp$income != rf_mod$predicted)
+}
+
+ggplot(data.frame(x=num_trees, y = oob_ME_by_num_trees)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+Using the adult data, find the bootstrap misclassification error for a bagged-tree model using 1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000 trees.
+
+```{r}
+oob_ME_by_num_trees_bag = array(NA, length(num_trees))
+
+for (i in 1:length(num_trees)){
+  rf_mod = randomForest(income~., data = adult_samp, ntree = num_trees[i], mtry = ncol(adult)-1)
+  oob_ME_by_num_trees_bag[i] = mean(adult_samp$income != rf_mod$predicted)
+}
+
+ggplot(data.frame(x=num_trees, y = oob_ME_by_num_trees)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+What is the percentage gain / loss in performance of the RF model vs bagged trees model?
+
+```{r}
+(oob_ME_by_num_trees - oob_ME_by_num_trees_bag ) / oob_ME_by_num_trees_bag *100
+```
+
+
+Plot oob bootstrap misclassification error by number of trees for both RF and bagged trees.
+
+```{r}
+ggplot(rbind(data.frame(num_trees = num_trees, value = oob_ME_by_num_trees, model = "rf"), data.frame(num_trees = num_trees, value = oob_ME_by_num_trees_bag, model = "BAG"))) + 
+  geom_line(aes(x = num_trees, y= value, col = model))
+```
+
+Build RF models for 500 trees using different `mtry` values: 1, 2, ... the maximum (see above as maximum is defined by the specific RF algorithm implementation).
+
+```{r}
+mtrys = 1:(ncol(adult_samp)-1)
+oob_ME_by_mtrys = array(NA, length(mtrys))
+
+for (i in 1:length(mtrys)){
+  rf_mod = randomForest(income~., data = adult_samp, ntree = 500, mtry = mtrys[i])
+ oob_ME_by_mtrys[i] = mean(adult_samp$income != rf_mod$predicted)
+}
+
+ggplot(data.frame(x=mtrys, y = oob_ME_by_mtrys)) + 
+  geom_line(aes(x=x, y=y))
+```
+
+
+```{r}
+rm(list = ls())
+```
+
+Write a function `random_bagged_ols` which takes as its arguments `X` and `y` with further arguments `num_ols_models` defaulted to 100 and `mtry` defaulted to NULL which then gets set within the function to be 50% of available features. This argument builds an OLS on a bootstrap sample of the data and uses only `mtry < p` of the available features. The function then returns all the `lm` models as a list with size `num_ols_models`.
+
+```{r}
+random_bagged_ols = function(X, y, num_ols_models = 100, mtry = NULL){
+  p=ncol(X)
+  mtry = (0.50*p)
+  n = nrow(X)
+  all_mods = list()
+   
+  for (i in 1:num_ols_models){
+  
+    n_train = sample(1:n, size = n, replace = TRUE)
+    col_choose = sample(colnames(X), size = sample(mtry, size = 1, replace = FALSE))
+    x_train = X[n_train, ]
+    y_train = y[n_train]
+    f = as.formula(paste("y ~", paste(col_choose[!col_choose %in% "y"], collapse = " + ")))
+    all_mods[[i]] = lm(f, data = x_train)
+  }
+  all_mods
+}
+
+
+```
+
+
+Load up the Boston Housing Data and separate into `X` and `y`.
+
+```{r}
+pacman::p_load(MASS)
+data(Boston)
+y = Boston$medv
+X = Boston[, 1:13]
+X$medv= NULL
+head(X)
+
+random_bagged_ols(X,y)
+```
+
+
+Similar to lab 1, write a function that takes a matrix and punches holes (i.e. sets entries equal to `NA`) randomly with an argument `prob_missing`.
+
+```{r}
+make_holes = function(X, prob_missing = NULL){
+  X = as.matrix(X)
+  n = nrow(X)
+  p = ncol(X)
+  holes = matrix(nrow = n, ncol = p, sample(c(rep(0, n*p*(1-prob_missing)), rep(3, n*p*prob_missing))))
+  for(i in 1:n){
+    for(j in 1:p){
+      if(holes[i,j]==3){
+        X[i,j]=NA
+    }
+  }
+}
+X
+}
+```
+
+Create a matrix `Xmiss` which is `X` but has missingness with probability of 10%.
+
+```{r}
+X_miss = make_holes(X, 0.10)
+table(is.na(X_miss))
+```
+
+Use a random forest modeling procedure to iteratively fill in the `NA`'s by predicting each feature of X using every other feature of X. You need to start by filling in the holes to use RF. So fill them in with the average of the feature.
+
+```{r}
+##use MissForest
+
+pacman::p_load(randomForest)
+library(tidyr)
+
+X = data.frame(X_miss)
+n = nrow(X)
+p = ncol(X)
+
+for(i in 1:n){
+  for(j in 1:p){
+    if(is.na(X[i,j])){
+      X_new = X %>%
+ replace_na(as.list(colMeans(X, na.rm = TRUE)))
+      
+      mod = randomForest(X_new[,j] ~ ., data = X_new, ntree = 100)
+      
+      X[i,j] = predict(mod, X_new[i,])
+    }
+  }
+}
+
+head(X)
+table(is.na(X))
+```
+
+
+
