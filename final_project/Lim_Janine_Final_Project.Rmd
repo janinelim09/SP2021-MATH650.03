@@ -1,0 +1,294 @@
+```{r}
+## data exploration
+pacman::p_load(data.table, tidyverse, magrittr, skimr)
+housing = fread("housing_data_2016_2017.csv")
+str(housing)
+ncol(housing) ##original ncol = 55
+nrow(housing) #observations = 2230
+skim(housing)
+```
+
+```{r}
+table(is.na(housing$garage_exists))
+table(housing$garage_exists) ##all yes - redundant information
+keep_cols = colnames(housing)[-(1:28)] ##only keeping relevant columns 
+housing_cleaned = housing %>% 
+  dplyr::filter(is.na(sale_price) ==FALSE) %>% #keeping only the rows with sale_price 
+  select(all_of(keep_cols)) %>% 
+  select(-url, -model_type, -date_of_sale, -listing_price_to_nearest_1000, -garage_exists) ##model type is redundant information
+
+#check levels for what should be categorical variables
+check_levels = housing_cleaned %>% 
+  select_if(is.character) %>% 
+  select(-full_address_or_zip_code, -maintenance_cost, -parking_charges, -sale_price, -total_taxes)
+
+lapply(check_levels, table) ##errors in levels 
+
+##changing to factor variables
+housing_cleaned$cats_allowed = as.factor(housing_cleaned$cats_allowed)
+housing_cleaned$dogs_allowed = as.factor(housing_cleaned$dogs_allowed)
+
+
+housing_cleaned$dining_room_type = ifelse(is.na(housing_cleaned$dining_room_type)==TRUE, "missing", housing_cleaned$dining_room_type)
+housing_cleaned$dining_room_type = as.factor(housing_cleaned$dining_room_type)
+
+housing_cleaned$coop_condo = as.factor(housing_cleaned$coop_condo)
+
+housing_cleaned$fuel_type = ifelse(housing_cleaned$fuel_type =="other" | housing_cleaned$fuel_type =="Other", "Other", housing_cleaned$fuel_type)
+housing_cleaned$fuel_type = ifelse(is.na(housing_cleaned$fuel_type)==TRUE, "missing", housing_cleaned$fuel_type)
+housing_cleaned$fuel_type = as.factor(housing_cleaned$fuel_type)
+
+which(housing_cleaned$kitchen_type == "1955") ##error in data
+housing_cleaned$kitchen_type = ifelse(housing_cleaned$kitchen_type == "combo" | housing_cleaned$kitchen_type == "Combo", "Combo", 
+                                      ifelse(housing_cleaned$kitchen_type == "eat in" | housing_cleaned$kitchen_type == "Eat in" | housing_cleaned$kitchen_type == "Eat In" | housing_cleaned$kitchen_type == "eatin", "Eat In", 
+                                             ifelse(housing_cleaned$kitchen_type =="1955", NA, "efficiency_kitchen")))
+housing_cleaned$kitchen_type =ifelse(is.na(housing_cleaned$kitchen_type)==TRUE, "missing", housing_cleaned$kitchen_type)
+housing_cleaned$kitchen_type = as.factor(housing_cleaned$kitchen_type)
+
+housing_cleaned$community_district_num = ifelse(is.na(housing_cleaned$community_district_num) == TRUE, "missing", housing_cleaned$community_district_num)
+housing_cleaned$community_district_num = as.factor(housing_cleaned$community_district_num)
+##getting only zip codes for addresses
+zip_codes = gsub("[^0-9.-]", "", housing_cleaned$full_address_or_zip_code)
+housing_cleaned$zip_codes = str_sub(zip_codes, -5, -1)
+housing_cleaned$zip_codes = as.factor(housing_cleaned$zip_codes)
+housing_cleaned$full_address_or_zip_code = NULL
+##changing walk score to categorical
+housing_cleaned$walk_score = ifelse(housing_cleaned$walk_score <=49, "car-dependent", 
+                                    ifelse(housing_cleaned$walk_score >49 & housing_cleaned$walk_score <=69, "somewhat walkable", ifelse(housing_cleaned$walk_score >69 & housing_cleaned$walk_score <=89, "very walkable", "fully walkable")))
+housing_cleaned$walk_score = as.factor(housing_cleaned$walk_score)
+```
+
+```{r}
+##changing character variables to numeric variables 
+housing_cleaned$common_charges = parse_number(housing_cleaned$common_charges)
+housing_cleaned$maintenance_cost = parse_number(housing_cleaned$maintenance_cost)
+housing_cleaned$parking_charges = parse_number(housing_cleaned$parking_charges)
+housing_cleaned$total_taxes = parse_number(housing_cleaned$total_taxes)
+housing_cleaned$sale_price = parse_number(housing_cleaned$sale_price)
+```
+
+```{r}
+#find stats on numeric features
+numeric_features = housing_cleaned %>% 
+  select(where(is.numeric) | where(is.integer))
+mean_features = colMeans(numeric_features, na.rm = TRUE)
+sd_features = unlist(lapply(numeric_features, sd, na.rm = TRUE))
+min_features = unlist(lapply(numeric_features, min, na.rm = TRUE))
+max_features = unlist(lapply(numeric_features, max, na.rm = TRUE))
+
+summary_numeric = data.frame(mean_features, sd_features, min_features, max_features)
+colnames(summary_numeric) = c("average", "standard deviation", "minimum", "maximum")
+
+summary_numeric
+```
+
+```{r}
+##find stats on categorical variables/nominal 
+nominal_features = housing_cleaned %>% 
+  select(where(is.factor))
+n = nrow(nominal_features)
+find_percentages = function(X){
+  (table(X)/n)*100
+}
+percentages = unlist(lapply(nominal_features, find_percentages))
+percentages_categorical = data.frame(percentages)
+
+percentages_categorical
+
+```
+
+```{r}
+missing_obs = tbl_df(apply(is.na(housing_cleaned), 2, as.numeric))
+colnames(missing_obs) = paste("is_missing_", colnames(housing_cleaned), sep = "")
+missing_obs %<>% 
+    select_if(function(x){sum(x) > 0})
+missing_obs = tbl_df(t(unique(t(missing_obs))))
+#combine with original data to help with imputation
+housing_missing = cbind(housing_cleaned, missing_obs)
+
+set.seed(9)
+test_prop = 0.2 
+train_indx = sample(1:nrow(housing_missing), round((1-test_prop)*nrow(housing_missing)))
+
+housing_train_RegTree = housing_missing[train_indx, ]
+y_train_RegTree = housing_train_RegTree$sale_price
+housing_train_RegTree$sale_price = NULL
+
+test_indx = setdiff(1:nrow(housing_missing), train_indx)
+housing_test_RegTree = housing_missing[test_indx, ]
+y_test_RegTree = housing_test_RegTree$sale_price
+housing_test_RegTree$sale_price = NULL
+
+```
+
+```{r}
+##impute using MissForest for train
+set.seed(9)
+pacman::p_load(missForest)
+housing_train_imp_RegTree = missForest(housing_train_RegTree)$ximp
+skim(housing_train_imp_RegTree)
+
+#impute for test
+n=nrow(housing_train_imp_RegTree)
+housing_RegTree_full = rbind(housing_train_imp_RegTree, housing_test_RegTree)
+housing_RegTree_imp = missForest(housing_RegTree_full)$ximp
+housing_test_imp_RegTree = housing_RegTree_imp[-c(1:n), ] ##gets only test indx
+```
+
+```{r}
+
+set.seed(9)
+#Regression Tree
+pacman::p_load(rpart, rpart.plot)
+
+n=nrow(housing_train_imp_RegTree)
+##find optimal node size for RegTree
+node_sizes = 10:400
+se_by_node_sizes = array(NA, dim = length(node_sizes))
+for (i in 1:length(node_sizes)){
+  regTree_mod = rpart(y_train_RegTree ~., data = housing_train_imp_RegTree, method = "anova", 
+                      control = list(
+                        minsplit = node_sizes[i],
+                        xval = 10))
+  yhat_test = predict(regTree_mod, housing_test_imp_RegTree)
+  se_by_node_sizes[i] = sd(y_test_RegTree - yhat_test)
+}
+
+ggplot(data.frame(x=node_sizes, y = se_by_node_sizes)) + 
+  geom_line(aes(x=x, y=y)) 
+
+min_split = which.min(se_by_node_sizes)
+
+
+regtree = rpart(y_train_RegTree ~., data = housing_train_RegTree,  method = "anova", 
+                control = list(
+                  minsplit = min_split, 
+                  maxdepth = 10,
+                  xval = 10
+                ))
+
+rpart.plot(regtree)
+
+yhat_test = predict(regtree, housing_test_imp_RegTree)
+se_final = sd(y_test_RegTree - yhat_test)
+RMSE = sqrt(mean(yhat_test)^2)
+```
+
+```{r}
+##Linear Regression
+
+housing_cleaned_imp = missForest(housing_cleaned)$ximp
+y = housing_cleaned_imp$sale_price
+lin_mod = lm(sale_price~., data = housing_cleaned_imp)
+summary(lin_mod)
+summary(lin_mod)$r.squared
+summary(lin_mod)$sigma
+
+abs(median((lin_mod$residuals/housing_cleaned_imp$sale_price)*100)) #median error
+plot(lin_mod$residuals)
+```
+
+
+```{r}
+##Random Forest 
+## create missing cols first and append to original and then redo train test split for randomForest
+
+#creates dummy missing cols
+missing_obs = tbl_df(apply(is.na(housing_cleaned), 2, as.numeric))
+colnames(missing_obs) = paste("is_missing_", colnames(housing_cleaned), sep = "")
+missing_obs %<>% 
+    select_if(function(x){sum(x) > 0})
+missing_obs = tbl_df(t(unique(t(missing_obs))))
+#combine with original data to help with imputation
+housing_missing = cbind(housing_cleaned, missing_obs)
+
+test_prop = 0.2 
+train_indx_RF = sample(1:nrow(housing_missing), round((1-test_prop)*nrow(housing_missing)))
+
+housing_train_RF = housing_missing[train_indx_RF, ]
+y_train_RF = housing_train_RF$sale_price
+#housing_train_RF$sale_price = NULL
+
+
+test_indx_RF = setdiff(1:nrow(housing_missing), train_indx_RF)
+housing_test_RF = housing_missing[test_indx_RF, ]
+y_test_RF = housing_test_RF$sale_price
+#housing_test_RF$sale_price= NULL
+
+##now impute for train RF
+housing_train_imp_RF = missForest(housing_train_RF)$ximp
+skim(housing_train_imp_RF)
+n=nrow(housing_train_imp_RF)
+
+##must impute for test RF
+housing_RF_full = rbind(housing_train_imp_RF, housing_test_RF)
+housing_RF_imp = missForest(housing_RF_full)$ximp
+housing_test_imp_RF = housing_RF_imp[-c(1:n), ]
+```
+
+```{r}
+set.seed(9)
+pacman::p_load("mlr")
+train_task = makeRegrTask(data = housing_train_imp_RF, target = "sale_price")
+test_task = makeRegrTask(data = housing_test_imp_RF, target = "sale_price")
+rf.lrn = makeLearner("regr.randomForest")
+
+p=ncol(housing_train_imp_RF)-1
+params<-makeParamSet(makeIntegerParam("mtry", lower = 1, upper = p), makeIntegerParam("ntree", lower = 1, upper = n))
+rdesc<-makeResampleDesc("Bootstrap")
+ctrl <-makeTuneControlRandom(maxit = 20)
+tune = tuneParams(learner = rf.lrn, 
+                  task = train_task, 
+                  resampling = rdesc, 
+                  measures = list(rsq, rmse), 
+                  par.set = params, 
+                  control = ctrl, show.info = T)
+
+params2 = tune$x
+mtry = params2[[1]]
+ntree = params2[[2]]
+
+
+mod_bag = randomForest(sale_price~., data = housing_train_imp_RF, ntree = ntree, mtry = mtry )
+oob_rmse = sd(housing_train_imp_RF$sale_price - mod_bag$predicted)
+mod_bag
+oob_rsq = 0.8224
+
+##generalization error
+yhat_test_rf = predict(mod_bag, housing_test_imp_RF)
+oos_rmse_rf = sd(y_test_RF - yhat_test_rf)
+oos_rsq = cor(y_test_RF, yhat_test_rf)^2
+##Holdout validation
+rf.lrn = makeLearner("regr.randomForest")
+
+p=ncol(housing_train_imp_RF)-1
+params<-makeParamSet(makeIntegerParam("mtry", lower = 1, upper = p), makeIntegerParam("ntree", lower = 1, upper = n))
+rdesc<-makeResampleDesc("Holdout")
+ctrl <-makeTuneControlRandom(maxit = 20)
+tune = tuneParams(learner = rf.lrn, 
+                  task = train_task, 
+                  resampling = rdesc, 
+                  measures = list(rsq, rmse), 
+                  par.set = params, 
+                  control = ctrl, show.info = T)
+params2 = tune$x
+mtry = params2[[1]]
+ntree = params2[[2]]
+
+mtry
+ntree
+
+mod_RF = randomForest(sale_price~., data = housing_train_imp_RF, ntree = ntree, mtry = mtry )
+
+yhat = predict(mod_RF, housing_test_imp_RF)
+oos_RMSE = sd(housing_test_imp_RF$sale_price - yhat)
+oos_RMSE
+mod_RF
+oos_rsq2 = 0.8203
+median(((y_test_RF - yhat)/y_test_RF)*100) #median error 
+max(((y_test_RF - yhat)/y_test_RF)*100)
+
+RMSE = c(oob_rmse, oos_rmse_rf, oos_RMSE)
+Rsq = c(oob_rsq, oos_rsq, oos_rsq2)
+cbind(RMSE, Rsq)
+```
